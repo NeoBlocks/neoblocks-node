@@ -1,0 +1,141 @@
+diff --git a/neo/Ledger/ApplicationExecutionResult.cs b/neo/Ledger/ApplicationExecutionResult.cs
+index 40bd89a..1477c7d 100644
+--- a/neo/Ledger/ApplicationExecutionResult.cs
++++ b/neo/Ledger/ApplicationExecutionResult.cs
+@@ -11,5 +11,6 @@ namespace Neo.Ledger
+         public Fixed8 GasConsumed { get; internal set; }
+         public StackItem[] Stack { get; internal set; }
+         public NotifyEventArgs[] Notifications { get; internal set; }
++        public NeoBlocksEvent[] Events { get; internal set; }
+     }
+ }
+diff --git a/neo/Ledger/Blockchain.cs b/neo/Ledger/Blockchain.cs
+index 9aed274..2f77e49 100644
+--- a/neo/Ledger/Blockchain.cs
++++ b/neo/Ledger/Blockchain.cs
+@@ -595,7 +595,8 @@ namespace Neo.Ledger
+                                     VMState = engine.State,
+                                     GasConsumed = engine.GasConsumed,
+                                     Stack = engine.ResultStack.ToArray(),
+-                                    Notifications = engine.Service.Notifications.ToArray()
++                                    Notifications = engine.Service.Notifications.ToArray(),
++                                    Events = engine.Service.Events.ToArray()
+                                 });
+                             }
+                             break;
+diff --git a/neo/SmartContract/NeoBlocksEvent.cs b/neo/SmartContract/NeoBlocksEvent.cs
+new file mode 100644
+index 0000000..edc5ca0
+--- /dev/null
++++ b/neo/SmartContract/NeoBlocksEvent.cs
+@@ -0,0 +1,19 @@
++﻿using Neo.VM;
++using System;
++
++namespace Neo.SmartContract
++{
++    public class NeoBlocksEvent : System.EventArgs
++    {
++        public UInt160 ScriptHash { get; }
++        public string Type { get; }
++        public StackItem State { get; }
++
++        public NeoBlocksEvent(UInt160 script_hash, string event_type, StackItem event_state)
++        {
++            this.ScriptHash = script_hash;
++            this.Type = event_type;
++            this.State = event_state;
++        }
++    }
++}
+diff --git a/neo/SmartContract/NeoService.cs b/neo/SmartContract/NeoService.cs
+index 74102d0..26a5616 100644
+--- a/neo/SmartContract/NeoService.cs
++++ b/neo/SmartContract/NeoService.cs
+@@ -695,6 +695,7 @@ namespace Neo.SmartContract
+                 ContractsCreated.Add(hash, new UInt160(engine.CurrentContext.ScriptHash));
+             }
+             engine.CurrentContext.EvaluationStack.Push(StackItem.FromInterface(contract));
++            events.Add(new NeoBlocksEvent(hash, "Contract.Create", StackItem.FromInterface(contract)));
+             return true;
+         }
+ 
+@@ -752,6 +753,7 @@ namespace Neo.SmartContract
+                 }
+             }
+             engine.CurrentContext.EvaluationStack.Push(StackItem.FromInterface(contract));
++            events.Add(new NeoBlocksEvent(hash, "Contract.Migrate", StackItem.FromInterface(contract)));
+             return Contract_Destroy(engine);
+         }
+ 
+diff --git a/neo/SmartContract/StandardService.cs b/neo/SmartContract/StandardService.cs
+index 97bc17e..b01fe4d 100644
+--- a/neo/SmartContract/StandardService.cs
++++ b/neo/SmartContract/StandardService.cs
+@@ -25,11 +25,13 @@ namespace Neo.SmartContract
+         protected readonly Snapshot Snapshot;
+         protected readonly List<IDisposable> Disposables = new List<IDisposable>();
+         protected readonly Dictionary<UInt160, UInt160> ContractsCreated = new Dictionary<UInt160, UInt160>();
++        protected readonly List<NeoBlocksEvent> events = new List<NeoBlocksEvent>();
+         private readonly List<NotifyEventArgs> notifications = new List<NotifyEventArgs>();
+         private readonly Dictionary<uint, Func<ExecutionEngine, bool>> methods = new Dictionary<uint, Func<ExecutionEngine, bool>>();
+         private readonly Dictionary<uint, long> prices = new Dictionary<uint, long>();
+ 
+         public IReadOnlyList<NotifyEventArgs> Notifications => notifications;
++        public IReadOnlyList<NeoBlocksEvent> Events => events;
+ 
+         public StandardService(TriggerType trigger, Snapshot snapshot)
+         {
+@@ -186,13 +188,16 @@ namespace Neo.SmartContract
+             NotifyEventArgs notification = new NotifyEventArgs(engine.ScriptContainer, new UInt160(engine.CurrentContext.ScriptHash), state);
+             Notify?.Invoke(this, notification);
+             notifications.Add(notification);
++            events.Add(new NeoBlocksEvent(new UInt160(engine.CurrentContext.ScriptHash), "Runtime.Notify", state));
+             return true;
+         }
+ 
+         protected bool Runtime_Log(ExecutionEngine engine)
+         {
+-            string message = Encoding.UTF8.GetString(engine.CurrentContext.EvaluationStack.Pop().GetByteArray());
++            StackItem state = engine.CurrentContext.EvaluationStack.Pop();
++            string message = Encoding.UTF8.GetString(state.GetByteArray());
+             Log?.Invoke(this, new LogEventArgs(engine.ScriptContainer, new UInt160(engine.CurrentContext.ScriptHash), message));
++            events.Add(new NeoBlocksEvent(new UInt160(engine.CurrentContext.ScriptHash), "Runtime.Log", state));
+             return true;
+         }
+ 
+@@ -649,6 +654,7 @@ namespace Neo.SmartContract
+             if (contract.HasStorage)
+                 foreach (var pair in Snapshot.Storages.Find(hash.ToArray()))
+                     Snapshot.Storages.Delete(pair.Key);
++            events.Add(new NeoBlocksEvent(hash, "Contract.Destroy", true));
+             return true;
+         }
+ 
+@@ -668,6 +674,9 @@ namespace Neo.SmartContract
+             if (item.IsConstant) return false;
+             item.Value = value;
+             item.IsConstant = flags.HasFlag(StorageFlags.Constant);
++            Map StorageMap = new Map();
++            StorageMap.Add(key, value);
++            events.Add(new NeoBlocksEvent(context.ScriptHash, "Storage.Put", StorageMap));
+             return true;
+         }
+ 
+@@ -701,13 +710,15 @@ namespace Neo.SmartContract
+                 StorageContext context = _interface.GetInterface<StorageContext>();
+                 if (context.IsReadOnly) return false;
+                 if (!CheckStorageContext(context)) return false;
++                StackItem EventKey = engine.CurrentContext.EvaluationStack.Pop();
+                 StorageKey key = new StorageKey
+                 {
+                     ScriptHash = context.ScriptHash,
+-                    Key = engine.CurrentContext.EvaluationStack.Pop().GetByteArray()
++                    Key = EventKey.GetByteArray()
+                 };
+                 if (Snapshot.Storages.TryGet(key)?.IsConstant == true) return false;
+                 Snapshot.Storages.Delete(key);
++                events.Add(new NeoBlocksEvent(context.ScriptHash, "Storage.Delete", EventKey));
+                 return true;
+             }
+             return false;

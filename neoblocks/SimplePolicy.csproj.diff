@@ -1,0 +1,13 @@
+diff --git a/SimplePolicy.csproj b/SimplePolicy.csproj
+index 2eee6b2..7f5b268 100644
+--- a/SimplePolicy.csproj
++++ b/SimplePolicy.csproj
+@@ -15,7 +15,7 @@
+   </ItemGroup>
+ 
+   <ItemGroup>
+-    <PackageReference Include="Neo" Version="2.11.0" />
++    <ProjectReference Include="..\..\neo\neo.csproj" />
+   </ItemGroup>
+ 
+ </Project>
