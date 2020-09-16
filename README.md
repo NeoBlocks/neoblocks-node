@@ -9,8 +9,8 @@ git submodule update --init
 ```
 ## Build the Docker image
 ```
-docker build -t neoblocks/neoblocks-node:2.11.0 .
-docker tag neoblocks/neoblocks-node:2.11.0 neoblocks/neoblocks-node
+docker build -t neoblocks/neoblocks-node:2.12.0 .
+docker tag neoblocks/neoblocks-node:2.12.0 neoblocks/neoblocks-node
 ```
 ## Create a Docker network bridge
 ```
